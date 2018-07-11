@@ -18,7 +18,7 @@ using Gremlin.Net.Driver.Remote;
             AccountEndpoint=https://<cosmosdb-name>.gremlin.cosmosdb.azure.com:443/;AccountKey=yh[...]==;ApiKind=Gremlin;Database=db01;Collection=col01
         Run in Code:
             Add -c <connection string> in the args collection in launch.json
-            
+
     Third party components
         * Chance - https://github.com/gmantaos/Chance.NET
         * CommandLineParser - https://github.com/commandlineparser/commandline
@@ -71,6 +71,8 @@ namespace cosmosdb_graph_test
             if (result.Tag != ParserResultType.Parsed) return;
 
             unparsed_connection_string = ((Parsed<CommandLineOptions>)result).Value.ConnectionString;
+            var rootNodeName = ((Parsed<CommandLineOptions>)result).Value.rootNode.Trim();
+            
             ParseUnparsedConnectionString(unparsed_connection_string);
             if (DoWeHaveAllParameters())
             {
@@ -88,7 +90,7 @@ namespace cosmosdb_graph_test
                 gremlinClient = new GremlinClient(gremlinServer, new GraphSON2Reader(), new GraphSON2Writer(), GremlinClient.GraphSON2MimeType);
                 //var resultFromSubmit = gremlinClient.SubmitAsync<dynamic>("g.addV('person').property('id', 'thomas').property('firstName', 'Thomas').property('age', 44)").GetAwaiter().GetResult();
                 
-                 InsertNode("1", 1).GetAwaiter().GetResult();
+                 InsertNode(rootNodeName, "", 1).GetAwaiter().GetResult();
                 
                 gremlinClient.Dispose();
             }
@@ -156,11 +158,11 @@ namespace cosmosdb_graph_test
             return part.Split('=', 2)[0];
         }
 
-        static async Task InsertNode(string id, int level)
+        static async Task InsertNode(string id, string parentId, int level)
         {
             int numberOfNodesToCreate = 0;
 
-            if (level == 6) return;
+            if (level == 7) return;
 
             switch (level)
             {
@@ -179,6 +181,9 @@ namespace cosmosdb_graph_test
                 case 5:
                     numberOfNodesToCreate = random.Next(1, 20);
                     break;
+                case 6:
+                    numberOfNodesToCreate = random.Next(1, 20);
+                    break;
                 default:
                     numberOfNodesToCreate = 0;
                     break;
@@ -190,10 +195,17 @@ namespace cosmosdb_graph_test
 
             InsertNodeInCosmos(id);
 
+            if (parentId != string.Empty) InsertEdgeInCosmos(parentId, id);
+
             for (int i = 0; i < numberOfNodesToCreate; i++)
             {
-                await InsertNode(id + "-" + i.ToString(), level + 1);
+                await InsertNode(id + "-" + i.ToString(), id, level + 1);
             }
+        }
+
+        private static void InsertEdgeInCosmos(string parentId, string id)
+        {
+            var resultFromSubmit = gremlinClient.SubmitAsync<dynamic>(CreateGremlinStatementToCreateAnEdge(parentId, id, "child")).GetAwaiter().GetResult();
         }
 
         private static string CreateGremlinStatementToCreateAVertex(string id, int numberOfProperties = 20)
@@ -208,6 +220,13 @@ namespace cosmosdb_graph_test
             }
 
             return sb.ToString();
+        }
+
+        private static string CreateGremlinStatementToCreateAnEdge(string sourceId, string destinationId, string label)
+        {
+            const string template = "g.V('{0}').addE('{1}').to(g.V('{2}'))";
+
+            return string.Format(template, sourceId, label, destinationId);
         }
 
         private static void InsertNodeInCosmos(string id)
