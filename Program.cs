@@ -2,22 +2,36 @@
 using System.Collections.Generic;
 using System.Text;
 using System.Threading.Tasks;
+using CommandLine;
 using Gremlin.Net.Driver;
 using Gremlin.Net.Structure.IO.GraphSON;
+using Microsoft.Extensions.Configuration;
 using Newtonsoft.Json;
 
+/* 
+    Documentation
+    
+    Third party components
+        * Chance - https://github.com/gmantaos/Chance.NET
+        * CommandLineParser - https://github.com/commandlineparser/commandline
+
+
+
+ */
 namespace cosmosdb_graph_test
 {
     class Program
     {
+        // remove
         static private Random random = new Random();
-        
 
-        private static string hostname = "";
-        private static int port = 443;
-        private static string authKey = "";
+        private static string unparsed_connection_string;
+        private static string accountEndpoint = "";
+        private static string accountKey = "";
+        private static string apiKind = "";
         private static string database = "";
         private static string collection = "";
+
 
         private static Dictionary<string, string> gremlinQueries = new Dictionary<string, string>
         {
@@ -44,35 +58,109 @@ namespace cosmosdb_graph_test
 
         static async Task Main(string[] args)
         {
+            var result = Parser.Default.ParseArguments<CommandLineOptions>(args);
+            if (result.Tag != ParserResultType.Parsed) return;
 
-            var gremlinServer = new GremlinServer(hostname, port, enableSsl: true,
-                                                    username: "/dbs/" + database + "/colls/" + collection,
-                                                    password: authKey);
-
-            using (var gremlinClient = new GremlinClient(gremlinServer, new GraphSON2Reader(), new GraphSON2Writer(), GremlinClient.GraphSON2MimeType))
+            unparsed_connection_string = ((Parsed<CommandLineOptions>)result).Value.ConnectionString;
+            ParseUnparsedConnectionString(unparsed_connection_string);
+            if(DoWeHaveAllParameters())
             {
-                foreach (var query in gremlinQueries)
-                {
-                    Console.WriteLine(String.Format("Running this query: {0}: {1}", query.Key, query.Value));
-
-                    // Create async task to execute the Gremlin query.
-                    var task = gremlinClient.SubmitAsync<dynamic>(query.Value);
-                    task.Wait();
-
-                    foreach (var result in task.Result)
-                    {
-                        // The vertex results are formed as Dictionaries with a nested dictionary for their properties
-                        string output = JsonConvert.SerializeObject(result);
-                        Console.WriteLine(String.Format("\tResult:\n\t{0}", output));
-                    }
-                    Console.WriteLine();
-                }
+                // Let's start
             }
+            else
+            {
+                Console.WriteLine("Check the parameters");
+            }
+
+            // IConfiguration config = new ConfigurationBuilder()
+            //     .AddEnvironmentVariables()
+            //     .Build();
+
+            // Console.WriteLine(config["cosmosdb_connectionstring"]);
+
+            // var gremlinServer = new GremlinServer(hostname, port, enableSsl: true,
+            //                                         username: "/dbs/" + database + "/colls/" + collection,
+            //                                         password: authKey);
+
+            // using (var gremlinClient = new GremlinClient(gremlinServer, new GraphSON2Reader(), new GraphSON2Writer(), GremlinClient.GraphSON2MimeType))
+            // {
+            //     foreach (var query in gremlinQueries)
+            //     {
+            //         Console.WriteLine(String.Format("Running this query: {0}: {1}", query.Key, query.Value));
+
+            //         // Create async task to execute the Gremlin query.
+            //         var task = gremlinClient.SubmitAsync<dynamic>(query.Value);
+            //         task.Wait();
+
+            //         foreach (var result in task.Result)
+            //         {
+            //             // The vertex results are formed as Dictionaries with a nested dictionary for their properties
+            //             string output = JsonConvert.SerializeObject(result);
+            //             Console.WriteLine(String.Format("\tResult:\n\t{0}", output));
+            //         }
+            //         Console.WriteLine();
+            //     }
+            // }
 
 
             //InsertNode("1", 1).GetAwaiter().GetResult();
             Console.WriteLine("Finished");
 
+
+
+        }
+
+        private static bool DoWeHaveAllParameters()
+        {
+            // ApiKind needs to be Gremlin
+            if(apiKind.ToLower() != "gremlin") return false;
+
+            if(accountEndpoint != string.Empty && accountKey != string.Empty && database != string.Empty && collection != string.Empty)
+            {
+                return true;
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        private static void ParseUnparsedConnectionString(string unparsedConnectionString)
+        {
+
+            foreach (var part in unparsedConnectionString.Trim().Split(';'))
+            {
+                switch (GetKeyFromPart(part.ToLower()))
+                {
+                    case "accountendpoint":
+                        accountEndpoint = GetValueFromPart(part);
+                        break;
+                    case "accountkey":
+                        accountKey = GetValueFromPart(part);
+                        break;
+                    case "apikind":
+                        apiKind = GetValueFromPart(part);
+                        break;
+                    case "database":
+                        database = GetValueFromPart(part);
+                        break;
+                    case "collection":
+                        collection = GetValueFromPart(part);
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+
+        private static string GetValueFromPart(string part)
+        {
+            return part.Split('=', 2)[1];
+        }
+
+        private static string GetKeyFromPart(string part)
+        {
+            return part.Split('=', 2)[0];
         }
 
         static async Task InsertNode(string parentId, int level)
