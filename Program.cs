@@ -9,6 +9,9 @@ using Newtonsoft.Json;
 using System.Text.RegularExpressions;
 using Gremlin.Net.Structure;
 using Gremlin.Net.Driver.Remote;
+using Polly.Retry;
+using Polly;
+using Gremlin.Net.Driver.Exceptions;
 
 /* 
     Documentation
@@ -41,6 +44,7 @@ namespace cosmosdb_graph_test
         private static string database = "";
         private static string collection = "";
         private static GremlinClient gremlinClient;
+        private static RetryPolicy retryWithWait;
 
         // private static Dictionary<string, string> gremlinQueries = new Dictionary<string, string>
         // {
@@ -72,10 +76,16 @@ namespace cosmosdb_graph_test
 
             unparsed_connection_string = ((Parsed<CommandLineOptions>)result).Value.ConnectionString;
             var rootNodeName = ((Parsed<CommandLineOptions>)result).Value.rootNode.Trim();
-            
+
             ParseUnparsedConnectionString(unparsed_connection_string);
             if (DoWeHaveAllParameters())
             {
+                retryWithWait = Policy
+                    .Handle<ResponseException>(r => r.Message.ToLower().Contains("request rate is large"))
+                    .WaitAndRetryForever(retryAttempt =>
+                        TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)) + TimeSpan.FromMilliseconds(random.Next(0, 1000)));
+    
+  
                 // Let's start
                 var gremlinServer = new GremlinServer(accountEndpoint, port, enableSsl: true,
                                                         username: "/dbs/" + database + "/colls/" + collection,
@@ -88,17 +98,16 @@ namespace cosmosdb_graph_test
                 // var vertex = g.AddV("person").Property("name", "kalle");
 
                 gremlinClient = new GremlinClient(gremlinServer, new GraphSON2Reader(), new GraphSON2Writer(), GremlinClient.GraphSON2MimeType);
-                //var resultFromSubmit = gremlinClient.SubmitAsync<dynamic>("g.addV('person').property('id', 'thomas').property('firstName', 'Thomas').property('age', 44)").GetAwaiter().GetResult();
-                
-                 InsertNode(rootNodeName, "", 1).GetAwaiter().GetResult();
-                
+
+                InsertNode(rootNodeName, "", 1).GetAwaiter().GetResult();
+
                 gremlinClient.Dispose();
             }
             else
             {
                 Console.WriteLine("Check the parameters");
             }
-           
+
             Console.WriteLine("Finished");
         }
 
@@ -205,7 +214,7 @@ namespace cosmosdb_graph_test
 
         private static void InsertEdgeInCosmos(string parentId, string id)
         {
-            var resultFromSubmit = gremlinClient.SubmitAsync<dynamic>(CreateGremlinStatementToCreateAnEdge(parentId, id, "child")).GetAwaiter().GetResult();
+            retryWithWait.Execute(() => gremlinClient.SubmitAsync<dynamic>(CreateGremlinStatementToCreateAnEdge(parentId, id, "child")).GetAwaiter().GetResult());
         }
 
         private static string CreateGremlinStatementToCreateAVertex(string id, int numberOfProperties = 20)
@@ -216,7 +225,7 @@ namespace cosmosdb_graph_test
 
             for (int i = 0; i < numberOfProperties; i++)
             {
-                sb.Append(string.Format(propertyTemplate, $"prop{i}", $"value{i}"));    
+                sb.Append(string.Format(propertyTemplate, $"prop{i}", $"value{i}"));
             }
 
             return sb.ToString();
@@ -231,7 +240,7 @@ namespace cosmosdb_graph_test
 
         private static void InsertNodeInCosmos(string id)
         {
-            var resultFromSubmit = gremlinClient.SubmitAsync<dynamic>(CreateGremlinStatementToCreateAVertex(id)).GetAwaiter().GetResult();
+            retryWithWait.Execute(() => gremlinClient.SubmitAsync<dynamic>(CreateGremlinStatementToCreateAVertex(id)).GetAwaiter().GetResult());
         }
 
     }
