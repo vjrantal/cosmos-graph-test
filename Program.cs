@@ -23,8 +23,8 @@ using Gremlin.Net.Driver.Exceptions;
             Add -c <connection string> in the args collection in launch.json
 
     Third party components
-        * Chance - https://github.com/gmantaos/Chance.NET
         * CommandLineParser - https://github.com/commandlineparser/commandline
+        * Polly - https://github.com/App-vNext/Polly
 
 
 
@@ -75,7 +75,7 @@ namespace cosmosdb_graph_test
             if (result.Tag != ParserResultType.Parsed) return;
 
             unparsed_connection_string = ((Parsed<CommandLineOptions>)result).Value.ConnectionString;
-            var rootNodeName = ((Parsed<CommandLineOptions>)result).Value.rootNode.Trim();
+            var rootNodeName = ((Parsed<CommandLineOptions>)result).Value.RootNode.Trim();
 
             ParseUnparsedConnectionString(unparsed_connection_string);
             if (DoWeHaveAllParameters())
@@ -83,19 +83,12 @@ namespace cosmosdb_graph_test
                 retryWithWait = Policy
                     .Handle<ResponseException>(r => r.Message.ToLower().Contains("request rate is large"))
                     .WaitAndRetryForever(retryAttempt =>
-                        TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)) + TimeSpan.FromMilliseconds(random.Next(0, 1000)));
-    
+                        TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)) + TimeSpan.FromMilliseconds(random.Next(0, 1000)));    
   
                 // Let's start
                 var gremlinServer = new GremlinServer(accountEndpoint, port, enableSsl: true,
                                                         username: "/dbs/" + database + "/colls/" + collection,
                                                         password: accountKey);
-
-
-                // this doesn't work in CosmosDB
-                // var graph = new Graph();
-                // var g = graph.Traversal().WithRemote(new DriverRemoteConnection(new GremlinClient(gremlinServer)));
-                // var vertex = g.AddV("person").Property("name", "kalle");
 
                 gremlinClient = new GremlinClient(gremlinServer, new GraphSON2Reader(), new GraphSON2Writer(), GremlinClient.GraphSON2MimeType);
 

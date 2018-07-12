@@ -8,6 +8,6 @@ namespace cosmosdb_graph_test
         public string ConnectionString { get; set; }
 
         [Option('r', "rootname", Required = false, HelpText = "Name of root node", Default = "1")]
-        public string rootNode { get; set; }
+        public string RootNode { get; set; }
     }
 }
