@@ -12,6 +12,7 @@ using Gremlin.Net.Driver.Remote;
 using Polly.Retry;
 using Polly;
 using Gremlin.Net.Driver.Exceptions;
+using ChanceNET;
 
 /* 
     Documentation
@@ -25,6 +26,7 @@ using Gremlin.Net.Driver.Exceptions;
     Third party components
         * CommandLineParser - https://github.com/commandlineparser/commandline
         * Polly - https://github.com/App-vNext/Polly
+        * Chance - https://github.com/gmantaos/Chance.NET
 
  */
 namespace cosmosdb_graph_test
@@ -33,6 +35,7 @@ namespace cosmosdb_graph_test
     {
         // remove
         static private Random random = new Random();
+        static private Chance chance = new Chance();
 
         private static string unparsed_connection_string;
         private static string accountEndpoint = "";
@@ -41,6 +44,7 @@ namespace cosmosdb_graph_test
         private static string apiKind = "";
         private static string database = "";
         private static string collection = "";
+        private static string rootNodeId = "";
         private static GremlinClient gremlinClient;
         private static RetryPolicy retryWithWait;
 
@@ -50,7 +54,7 @@ namespace cosmosdb_graph_test
             if (result.Tag != ParserResultType.Parsed) return;
 
             unparsed_connection_string = ((Parsed<CommandLineOptions>)result).Value.ConnectionString;
-            var rootNodeName = ((Parsed<CommandLineOptions>)result).Value.RootNode.Trim();
+            rootNodeId = ((Parsed<CommandLineOptions>)result).Value.RootNode.Trim();
 
             ParseUnparsedConnectionString(unparsed_connection_string);
             if (DoWeHaveAllParameters())
@@ -58,8 +62,8 @@ namespace cosmosdb_graph_test
                 retryWithWait = Policy
                     .Handle<ResponseException>(r => r.Message.ToLower().Contains("request rate is large"))
                     .WaitAndRetryForever(retryAttempt =>
-                        TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)) + TimeSpan.FromMilliseconds(random.Next(0, 1000)));    
-  
+                        TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)) + TimeSpan.FromMilliseconds(random.Next(0, 1000)));
+
                 // Let's start
                 var gremlinServer = new GremlinServer(accountEndpoint, port, enableSsl: true,
                                                         username: "/dbs/" + database + "/colls/" + collection,
@@ -67,7 +71,7 @@ namespace cosmosdb_graph_test
 
                 gremlinClient = new GremlinClient(gremlinServer, new GraphSON2Reader(), new GraphSON2Writer(), GremlinClient.GraphSON2MimeType);
 
-                InsertNode(rootNodeName, "", 1).GetAwaiter().GetResult();
+                InsertNode(rootNodeId, "", 1).GetAwaiter().GetResult();
 
                 gremlinClient.Dispose();
             }
@@ -137,39 +141,57 @@ namespace cosmosdb_graph_test
         static async Task InsertNode(string id, string parentId, int level)
         {
             int numberOfNodesToCreate = 0;
+            Dictionary<string, object> properties = new Dictionary<string, object>();
+            string label = "node";
 
-            if (level == 7) return;
+            if (level == 6) return;
 
             switch (level)
             {
                 case 1:
-                    numberOfNodesToCreate = 45;
-                    break;
-                case 2:
                     numberOfNodesToCreate = random.Next(1, 10);
                     break;
-                case 3:
+                case 2:
                     numberOfNodesToCreate = random.Next(1, 100);
                     break;
-                case 4:
+                case 3:
                     numberOfNodesToCreate = random.Next(1, 40);
+                    break;
+                case 4:
+                    numberOfNodesToCreate = random.Next(1, 20);
+                    label = "asset";
+                    properties = new Dictionary<string, object>() {
+                        {"manufactor", chance.PickOne(new string[] {"siemens", "abb", "vortex", "mulvo", "ropert"})},
+                        {"installedAt", chance.Timestamp()},
+                        {"serial", chance.Guid().ToString()},
+                        {"comments", chance.Sentence(30)}                          
+                    };
                     break;
                 case 5:
                     numberOfNodesToCreate = random.Next(1, 20);
-                    break;
-                case 6:
-                    numberOfNodesToCreate = random.Next(1, 20);
-                    break;
-                default:
-                    numberOfNodesToCreate = 0;
+                    label = "asset";
+                    properties = new Dictionary<string, object>() {
+                        {"manufactor", chance.PickOne(new string[] {"siemens", "abb", "vortex", "mulvo", "ropert"})},
+                        {"installedAt", chance.Timestamp()},
+                        {"serial", chance.Guid().ToString()},
+                        {"comments", chance.Sentence(30)}                          
+                    };
                     break;
             }
+
+            properties.Add("partitionId", $"{rootNodeId}");
+            properties.Add("level", level);
+            properties.Add("createdAt", DateTimeOffset.Now.ToUnixTimeMilliseconds());
+            properties.Add("name", id);
+            properties.Add("parentId", parentId);
 
             string padding = new StringBuilder().Append('-', level).ToString();
 
             Console.WriteLine($"{padding} {id}");
 
-            InsertNodeInCosmos(id);
+            var gremlinStatement = CreateGremlinStatementToCreateAVertex(id, label, properties);
+
+            InsertNodeInCosmos(gremlinStatement);
 
             if (parentId != string.Empty) InsertEdgeInCosmos(parentId, id);
 
@@ -184,15 +206,25 @@ namespace cosmosdb_graph_test
             retryWithWait.Execute(() => gremlinClient.SubmitAsync<dynamic>(CreateGremlinStatementToCreateAnEdge(parentId, id, "child")).GetAwaiter().GetResult());
         }
 
-        private static string CreateGremlinStatementToCreateAVertex(string id, int numberOfProperties = 20)
+        private static string CreateGremlinStatementToCreateAVertex(string id, string label, Dictionary<string, object> properties)
         {
-            const string template = "g.addV('asset').property('id', '{0}')";
-            const string propertyTemplate = ".property('{0}', '{1}')";
-            StringBuilder sb = new StringBuilder(string.Format(template, id));
+            const string template = "g.addV('{0}').property('id', '{1}')";
+            string propertyTemplate = "";
 
-            for (int i = 0; i < numberOfProperties; i++)
+            StringBuilder sb = new StringBuilder(string.Format(template, label, id));
+
+            foreach (var property in properties)
             {
-                sb.Append(string.Format(propertyTemplate, $"prop{i}", $"value{i}"));
+                if (property.Value is string)
+                {
+                    propertyTemplate = ".property('{0}', '{1}')";
+                }
+                else
+                {
+                    propertyTemplate = ".property('{0}', {1})";
+                }
+
+                sb.Append(string.Format(propertyTemplate, $"{property.Key}", $"{property.Value}"));
             }
 
             return sb.ToString();
@@ -200,14 +232,15 @@ namespace cosmosdb_graph_test
 
         private static string CreateGremlinStatementToCreateAnEdge(string sourceId, string destinationId, string label)
         {
-            const string template = "g.V('{0}').addE('{1}').to(g.V('{2}'))";
+            // const string template = "g.V('{0}').addE('{1}').property('model','primary').to(g.V('{2}')).V('{2}').addE('root').to(g.V('{3}'))";
+            const string template = "g.V('{0}').addE('{1}').property('model','primary').to(g.V('{2}'))";
 
-            return string.Format(template, sourceId, label, destinationId);
+            return string.Format(template, sourceId, label, destinationId, rootNodeId);
         }
 
-        private static void InsertNodeInCosmos(string id)
+        private static void InsertNodeInCosmos(string gremlingStatement)
         {
-            retryWithWait.Execute(() => gremlinClient.SubmitAsync<dynamic>(CreateGremlinStatementToCreateAVertex(id)).GetAwaiter().GetResult());
+            retryWithWait.Execute(() => gremlinClient.SubmitAsync<dynamic>(gremlingStatement).GetAwaiter().GetResult());
         }
     }
 }
