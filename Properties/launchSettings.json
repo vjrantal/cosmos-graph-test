@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "cosmosdb-graph-test": {
+      "commandName": "Project",
+      "commandLineArgs": "-c AccountEndpoint=https://syah-equinor.documents.azure.com:443/;AccountKey=K1EMcV1fsZf6h2PK16hgLVY64WtAmTioMWFTj8OJvoMgnN72vr2kvAYOL9bWm0KJgGFCH55YfIGo3KfBUw1VgQ==;ApiKind=Gremlin;database=equinor;collection=assets"
+    }
+  }
+}

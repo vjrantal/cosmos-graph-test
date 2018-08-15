@@ -1,31 +1,25 @@
-﻿using System;
+﻿using ChanceNET;
+using CommandLine;
+using Microsoft.Azure.CosmosDB.BulkExecutor;
+using Microsoft.Azure.CosmosDB.BulkExecutor.Graph.Element;
+using Microsoft.Azure.Documents.Client;
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using CommandLine;
-using Gremlin.Net.Driver;
-using Gremlin.Net.Structure.IO.GraphSON;
-using Newtonsoft.Json;
-using System.Text.RegularExpressions;
-using Gremlin.Net.Structure;
-using Gremlin.Net.Driver.Remote;
-using Polly.Retry;
-using Polly;
-using Gremlin.Net.Driver.Exceptions;
-using ChanceNET;
 
 /* 
     Documentation
     
     Connection String
         Example: 
-            AccountEndpoint=https://<cosmosdb-name>.gremlin.cosmosdb.azure.com:443/;AccountKey=yh[...]==;ApiKind=Gremlin;Database=db01;Collection=col01
+            AccountEndpoint=https://<cosmosdb-name>.documents.azure.com:443/;AccountKey=yh[...]==;ApiKind=Gremlin;Database=db01;Collection=col01
         Run in Code:
             Add -c <connection string> in the args collection in launch.json
 
     Third party components
         * CommandLineParser - https://github.com/commandlineparser/commandline
-        * Polly - https://github.com/App-vNext/Polly
         * Chance - https://github.com/gmantaos/Chance.NET
 
  */
@@ -33,47 +27,48 @@ namespace cosmosdb_graph_test
 {
     class Program
     {
-        // remove
-        static private Random random = new Random();
-        static private Chance chance = new Chance();
+        private static Random _random = new Random();
+        private static Chance _chance = new Chance();
 
-        private static string unparsed_connection_string;
-        private static string accountEndpoint = "";
-        private static int port = 443;
-        private static string accountKey = "";
-        private static string apiKind = "";
-        private static string database = "";
-        private static string collection = "";
-        private static string rootNodeId = "";
-        private static GremlinClient gremlinClient;
-        private static RetryPolicy retryWithWait;
+        private static string _unparsedConnectionString;
+        private static string _rootNodeId = "";
+        private static int _batchSize;
 
-        static async Task Main(string[] args)
+        private static string _accountEndpoint = "";
+        private const int _port = 443;
+        private static string _accountKey = "";
+        private static string _apiKind = "";
+        private static string _database = "";
+        private static string _collection = "";
+
+        private static DocumentClient _documentClient;
+        private static readonly ConnectionPolicy _connectionPolicy = new ConnectionPolicy
         {
-            var result = Parser.Default.ParseArguments<CommandLineOptions>(args);
-            if (result.Tag != ParserResultType.Parsed) return;
+            ConnectionMode = ConnectionMode.Direct,
+            ConnectionProtocol = Protocol.Tcp
+        };
+        private static BulkExecutor _bulkExecutor;
+        private static readonly IList<object> _verticesAndEdgesToAdd = new List<object>();
 
-            unparsed_connection_string = ((Parsed<CommandLineOptions>)result).Value.ConnectionString;
-            rootNodeId = ((Parsed<CommandLineOptions>)result).Value.RootNode.Trim();
+        private static async Task Main(string[] args)
+        {
+            var result = (Parsed<CommandLineOptions>)Parser.Default.ParseArguments<CommandLineOptions>(args);
+            if (result.Tag != ParserResultType.Parsed)
+                return;
 
-            ParseUnparsedConnectionString(unparsed_connection_string);
+            _unparsedConnectionString = result.Value.ConnectionString;
+            _rootNodeId = result.Value.RootNode.Trim();
+            _batchSize = result.Value.BatchSize;
+
+            ParseConnectionString(_unparsedConnectionString);            
+
             if (DoWeHaveAllParameters())
             {
-                retryWithWait = Policy
-                    .Handle<ResponseException>(r => r.Message.ToLower().Contains("request rate is large"))
-                    .WaitAndRetryForever(retryAttempt =>
-                        TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)) + TimeSpan.FromMilliseconds(random.Next(0, 1000)));
+                await InitializeCosmosDbAsync();
+                await InsertNodeAsync(_rootNodeId, "", "", 1);
 
-                // Let's start
-                var gremlinServer = new GremlinServer(accountEndpoint, port, enableSsl: true,
-                                                        username: "/dbs/" + database + "/colls/" + collection,
-                                                        password: accountKey);
-
-                gremlinClient = new GremlinClient(gremlinServer, new GraphSON2Reader(), new GraphSON2Writer(), GremlinClient.GraphSON2MimeType);
-
-                InsertNode(rootNodeId, "", 1).GetAwaiter().GetResult();
-
-                gremlinClient.Dispose();
+                // Import remaining vertices and edges
+                await BulkImportToCosmosDbAsync();
             }
             else
             {
@@ -83,12 +78,32 @@ namespace cosmosdb_graph_test
             Console.WriteLine("Finished");
         }
 
+        private static async Task InitializeCosmosDbAsync()
+        {
+            _documentClient = new DocumentClient(new Uri(_accountEndpoint), _accountKey, _connectionPolicy);
+            var dataCollection = _documentClient.CreateDocumentCollectionQuery(UriFactory.CreateDatabaseUri(_database))
+                .Where(c => c.Id == _collection).AsEnumerable().FirstOrDefault();
+
+            // Set retry options high during initialization (default values).
+            _documentClient.ConnectionPolicy.RetryOptions.MaxRetryWaitTimeInSeconds = 30;
+            _documentClient.ConnectionPolicy.RetryOptions.MaxRetryAttemptsOnThrottledRequests = 9;
+
+            _bulkExecutor = new BulkExecutor(_documentClient, dataCollection);
+            await _bulkExecutor.InitializeAsync();
+
+            // Set retries to 0 to pass complete control to bulk executor.
+            _documentClient.ConnectionPolicy.RetryOptions.MaxRetryWaitTimeInSeconds = 0;
+            _documentClient.ConnectionPolicy.RetryOptions.MaxRetryAttemptsOnThrottledRequests = 0;
+        }
+
         private static bool DoWeHaveAllParameters()
         {
             // ApiKind needs to be Gremlin
-            if (apiKind.ToLower() != "gremlin") return false;
+            if (_apiKind.ToLower() != "gremlin")
+                return false;
 
-            if (accountEndpoint != string.Empty && accountKey != string.Empty && database != string.Empty && collection != string.Empty)
+            if (_accountEndpoint != string.Empty && _accountKey != string.Empty && 
+                _database != string.Empty && _collection != string.Empty)
             {
                 return true;
             }
@@ -98,29 +113,26 @@ namespace cosmosdb_graph_test
             }
         }
 
-        private static void ParseUnparsedConnectionString(string unparsedConnectionString)
+        private static void ParseConnectionString(string unparsedConnectionString)
         {
             foreach (var part in unparsedConnectionString.Trim().Split(';'))
             {
                 switch (GetKeyFromPart(part.ToLower()))
                 {
                     case "accountendpoint":
-                        accountEndpoint = GetValueFromPart(part);
-                        // we need to strip out some part of it
-                        accountEndpoint = Regex.Replace(accountEndpoint, "https://", "");
-                        accountEndpoint = Regex.Replace(accountEndpoint, @":443(\/)?", "");
+                        _accountEndpoint = GetValueFromPart(part);
                         break;
                     case "accountkey":
-                        accountKey = GetValueFromPart(part);
+                        _accountKey = GetValueFromPart(part);
                         break;
                     case "apikind":
-                        apiKind = GetValueFromPart(part);
+                        _apiKind = GetValueFromPart(part);
                         break;
                     case "database":
-                        database = GetValueFromPart(part);
+                        _database = GetValueFromPart(part);
                         break;
                     case "collection":
-                        collection = GetValueFromPart(part);
+                        _collection = GetValueFromPart(part);
                         break;
                     default:
                         break;
@@ -130,117 +142,121 @@ namespace cosmosdb_graph_test
 
         private static string GetValueFromPart(string part)
         {
-            return part.Split('=', 2)[1];
+            return part.Split(new[] { '=' }, 2)[1];
         }
 
         private static string GetKeyFromPart(string part)
         {
-            return part.Split('=', 2)[0];
+            return part.Split(new[] { '=' }, 2)[0];
         }
 
-        static async Task InsertNode(string id, string parentId, int level)
+        private static async Task InsertNodeAsync(string id, string parentId, string parentLabel, int level)
         {
-            int numberOfNodesToCreate = 0;
-            Dictionary<string, object> properties = new Dictionary<string, object>();
-            string label = "node";
+            var numberOfNodesToCreate = 0;
+            var properties = new Dictionary<string, object>();
+            var label = "node";
 
-            if (level == 6) return;
+            if (level == 6)
+                return;
 
             switch (level)
             {
                 case 1:
-                    numberOfNodesToCreate = random.Next(1, 10);
+                    numberOfNodesToCreate = _random.Next(1, 10);
                     break;
                 case 2:
-                    numberOfNodesToCreate = random.Next(1, 100);
+                    numberOfNodesToCreate = _random.Next(1, 100);
                     break;
                 case 3:
-                    numberOfNodesToCreate = random.Next(1, 40);
+                    numberOfNodesToCreate = _random.Next(1, 40);
                     break;
                 case 4:
-                    numberOfNodesToCreate = random.Next(1, 20);
+                    numberOfNodesToCreate = _random.Next(1, 20);
                     label = "asset";
                     properties = new Dictionary<string, object>() {
-                        {"manufactor", chance.PickOne(new string[] {"siemens", "abb", "vortex", "mulvo", "ropert"})},
-                        {"installedAt", chance.Timestamp()},
-                        {"serial", chance.Guid().ToString()},
-                        {"comments", chance.Sentence(30)}                          
+                        {"manufacturer", _chance.PickOne(new string[] {"siemens", "abb", "vortex", "mulvo", "ropert"})},
+                        {"installedAt", _chance.Timestamp()},
+                        {"serial", _chance.Guid().ToString()},
+                        {"comments", _chance.Sentence(30)}                          
                     };
                     break;
                 case 5:
-                    numberOfNodesToCreate = random.Next(1, 20);
+                    numberOfNodesToCreate = _random.Next(1, 20);
                     label = "asset";
                     properties = new Dictionary<string, object>() {
-                        {"manufactor", chance.PickOne(new string[] {"siemens", "abb", "vortex", "mulvo", "ropert"})},
-                        {"installedAt", chance.Timestamp()},
-                        {"serial", chance.Guid().ToString()},
-                        {"comments", chance.Sentence(30)}                          
+                        {"manufacturer", _chance.PickOne(new string[] {"siemens", "abb", "vortex", "mulvo", "ropert"})},
+                        {"installedAt", _chance.Timestamp()},
+                        {"serial", _chance.Guid().ToString()},
+                        {"comments", _chance.Sentence(30)}                          
                     };
                     break;
             }
 
-            properties.Add("partitionId", $"{rootNodeId}");
+            properties.Add("partitionId", $"{_rootNodeId}");
             properties.Add("level", level);
             properties.Add("createdAt", DateTimeOffset.Now.ToUnixTimeMilliseconds());
             properties.Add("name", id);
             properties.Add("parentId", parentId);
 
-            string padding = new StringBuilder().Append('-', level).ToString();
-
+            var padding = new StringBuilder().Append('-', level).ToString();
             Console.WriteLine($"{padding} {id}");
 
-            var gremlinStatement = CreateGremlinStatementToCreateAVertex(id, label, properties);
+            var vertex = CreateGremlinVertex(id, label, properties);
+            await BulkInsertAsync(vertex);
 
-            InsertNodeInCosmos(gremlinStatement);
-
-            if (parentId != string.Empty) InsertEdgeInCosmos(parentId, id);
-
-            for (int i = 0; i < numberOfNodesToCreate; i++)
+            if (parentId != string.Empty)
             {
-                await InsertNode(id + "-" + i.ToString(), id, level + 1);
+                var edge = CreateGremlinEdge(parentId, id, parentLabel, label);
+                await BulkInsertAsync(edge);
+            }
+
+            for (var i = 0; i < numberOfNodesToCreate; i++)
+            {
+                await InsertNodeAsync(id + "-" + i.ToString(), id, label, level + 1);
             }
         }
 
-        private static void InsertEdgeInCosmos(string parentId, string id)
+        private static GremlinVertex CreateGremlinVertex(string id, string label, 
+            Dictionary<string, object> properties)
         {
-            retryWithWait.Execute(() => gremlinClient.SubmitAsync<dynamic>(CreateGremlinStatementToCreateAnEdge(parentId, id, "child")).GetAwaiter().GetResult());
-        }
-
-        private static string CreateGremlinStatementToCreateAVertex(string id, string label, Dictionary<string, object> properties)
-        {
-            const string template = "g.addV('{0}').property('id', '{1}')";
-            string propertyTemplate = "";
-
-            StringBuilder sb = new StringBuilder(string.Format(template, label, id));
+            var vertex = new GremlinVertex(id, label);
 
             foreach (var property in properties)
             {
-                if (property.Value is string)
-                {
-                    propertyTemplate = ".property('{0}', '{1}')";
-                }
-                else
-                {
-                    propertyTemplate = ".property('{0}', {1})";
-                }
-
-                sb.Append(string.Format(propertyTemplate, $"{property.Key}", $"{property.Value}"));
+                vertex.AddProperty(property.Key, property.Value);
             }
 
-            return sb.ToString();
+            return vertex;
         }
 
-        private static string CreateGremlinStatementToCreateAnEdge(string sourceId, string destinationId, string label)
+        private static GremlinEdge CreateGremlinEdge(string sourceId, string destinationId, 
+            string sourceLabel, string destinationLabel)
         {
-            // const string template = "g.V('{0}').addE('{1}').property('model','primary').to(g.V('{2}')).V('{2}').addE('root').to(g.V('{3}'))";
-            const string template = "g.V('{0}').addE('{1}').property('model','primary').to(g.V('{2}'))";
+            var edgeId = $"{sourceId} -> {destinationId}";
+            var edge = new GremlinEdge(edgeId, "child", sourceId, destinationId, 
+                sourceLabel, destinationLabel);
 
-            return string.Format(template, sourceId, label, destinationId, rootNodeId);
+            edge.AddProperty("model", "primary");
+            return edge;
         }
 
-        private static void InsertNodeInCosmos(string gremlingStatement)
+        private static async Task BulkInsertAsync(object vertexOrEdge)
         {
-            retryWithWait.Execute(() => gremlinClient.SubmitAsync<dynamic>(gremlingStatement).GetAwaiter().GetResult());
+            _verticesAndEdgesToAdd.Add(vertexOrEdge);
+            if (_verticesAndEdgesToAdd.Count >= _batchSize)
+            {
+                await BulkImportToCosmosDbAsync();                
+            }
+        }
+
+        private static async Task BulkImportToCosmosDbAsync()
+        {
+            var response = await _bulkExecutor.BulkImportAsync(_verticesAndEdgesToAdd);
+
+            if (response.BadInputDocuments.Any())
+                throw new Exception("BulkExecutor found bad input vertices and edges!");
+
+            _verticesAndEdgesToAdd.Clear();
         }
     }
 }
