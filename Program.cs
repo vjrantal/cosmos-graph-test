@@ -6,6 +6,7 @@ using Microsoft.Azure.CosmosDB.BulkExecutor.Graph.Element;
 using Microsoft.Azure.Documents.Client;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -32,15 +33,15 @@ namespace cosmosdb_graph_test
         private static Chance _chance = new Chance();
 
         private static string _unparsedConnectionString;
-        private static string _rootNodeId = "";
+        private static string _rootNodeId;
         private static int _batchSize;
 
-        private static string _accountEndpoint = "";
-        private const int _port = 443;
-        private static string _accountKey = "";
-        private static string _apiKind = "";
-        private static string _database = "";
-        private static string _collection = "";
+        private static string _accountEndpoint;
+        private static string _accountKey;
+        private static string _apiKind;
+        private static string _database;
+        private static string _collection;
+        private static string _partitionKey;
 
         private static DocumentClient _documentClient;
         private static readonly ConnectionPolicy _connectionPolicy = new ConnectionPolicy
@@ -50,9 +51,13 @@ namespace cosmosdb_graph_test
         };
         private static IBulkExecutor _graphBulkExecutor;
         private static IList<object> _graphElementsToAdd = new List<object>();
+        private static long _totalElements = 0;
 
         private static async Task Main(string[] args)
         {
+            var stopwatch = new Stopwatch();
+            stopwatch.Start();
+
             var result = (Parsed<CommandLineOptions>)Parser.Default.ParseArguments<CommandLineOptions>(args);
             if (result.Tag != ParserResultType.Parsed)
                 return;
@@ -66,7 +71,7 @@ namespace cosmosdb_graph_test
             if (DoWeHaveAllParameters())
             {
                 await InitializeCosmosDbAsync();
-                await InsertNodeAsync(_rootNodeId, "", "", 1);
+                await InsertNodeAsync(_rootNodeId, string.Empty, string.Empty, 1);
 
                 // Import remaining vertices and edges
                 await BulkImportToCosmosDbAsync();
@@ -76,7 +81,9 @@ namespace cosmosdb_graph_test
                 Console.WriteLine("Check the parameters");
             }
 
-            Console.WriteLine("Finished");
+            stopwatch.Stop();
+            Console.WriteLine($"Added {_totalElements} graph elements in {stopwatch.ElapsedMilliseconds} ms");
+            Console.ReadKey();
         }
 
         private static async Task InitializeCosmosDbAsync()
@@ -84,6 +91,8 @@ namespace cosmosdb_graph_test
             _documentClient = new DocumentClient(new Uri(_accountEndpoint), _accountKey, _connectionPolicy);
             var dataCollection = _documentClient.CreateDocumentCollectionQuery(UriFactory.CreateDatabaseUri(_database))
                 .Where(c => c.Id == _collection).AsEnumerable().FirstOrDefault();
+
+            _partitionKey = dataCollection.PartitionKey.Paths.First().Replace("/", string.Empty);
 
             // Set retry options high during initialization (default values).
             _documentClient.ConnectionPolicy.RetryOptions.MaxRetryWaitTimeInSeconds = 30;
@@ -157,8 +166,7 @@ namespace cosmosdb_graph_test
             var properties = new Dictionary<string, object>();
             var label = "node";
 
-            if (level == 6)
-                return;
+            _totalElements++;
 
             switch (level)
             {
@@ -193,7 +201,7 @@ namespace cosmosdb_graph_test
                     break;
             }
 
-            properties.Add("partitionId", _rootNodeId);
+            properties.Add(_partitionKey, _rootNodeId);
             properties.Add("level", level);
             properties.Add("createdAt", DateTimeOffset.Now.ToUnixTimeMilliseconds());
             properties.Add("name", id);
@@ -213,7 +221,7 @@ namespace cosmosdb_graph_test
 
             for (var i = 0; i < numberOfNodesToCreate; i++)
             {
-                await InsertNodeAsync(id + "-" + i.ToString(), id, label, level + 1);
+                await InsertNodeAsync($"{id}-{i}", id, label, level + 1);
             }
         }
 
