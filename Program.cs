@@ -1,6 +1,7 @@
 ﻿using ChanceNET;
 using CommandLine;
 using Microsoft.Azure.CosmosDB.BulkExecutor;
+using Microsoft.Azure.CosmosDB.BulkExecutor.Graph;
 using Microsoft.Azure.CosmosDB.BulkExecutor.Graph.Element;
 using Microsoft.Azure.Documents.Client;
 using System;
@@ -47,8 +48,8 @@ namespace cosmosdb_graph_test
             ConnectionMode = ConnectionMode.Direct,
             ConnectionProtocol = Protocol.Tcp
         };
-        private static BulkExecutor _bulkExecutor;
-        private static readonly IList<object> _verticesAndEdgesToAdd = new List<object>();
+        private static IBulkExecutor _graphBulkExecutor;
+        private static IList<object> _graphElementsToAdd = new List<object>();
 
         private static async Task Main(string[] args)
         {
@@ -88,8 +89,8 @@ namespace cosmosdb_graph_test
             _documentClient.ConnectionPolicy.RetryOptions.MaxRetryWaitTimeInSeconds = 30;
             _documentClient.ConnectionPolicy.RetryOptions.MaxRetryAttemptsOnThrottledRequests = 9;
 
-            _bulkExecutor = new BulkExecutor(_documentClient, dataCollection);
-            await _bulkExecutor.InitializeAsync();
+            _graphBulkExecutor = new GraphBulkExecutor(_documentClient, dataCollection);
+            await _graphBulkExecutor.InitializeAsync();
 
             // Set retries to 0 to pass complete control to bulk executor.
             _documentClient.ConnectionPolicy.RetryOptions.MaxRetryWaitTimeInSeconds = 0;
@@ -192,7 +193,7 @@ namespace cosmosdb_graph_test
                     break;
             }
 
-            properties.Add("partitionId", $"{_rootNodeId}");
+            properties.Add("partitionId", _rootNodeId);
             properties.Add("level", level);
             properties.Add("createdAt", DateTimeOffset.Now.ToUnixTimeMilliseconds());
             properties.Add("name", id);
@@ -234,29 +235,29 @@ namespace cosmosdb_graph_test
         {
             var edgeId = $"{sourceId} -> {destinationId}";
             var edge = new GremlinEdge(edgeId, "child", sourceId, destinationId, 
-                sourceLabel, destinationLabel);
+                sourceLabel, destinationLabel, _rootNodeId, _rootNodeId);
 
             edge.AddProperty("model", "primary");
             return edge;
         }
 
-        private static async Task BulkInsertAsync(object vertexOrEdge)
+        private static async Task BulkInsertAsync(object graphElement)
         {
-            _verticesAndEdgesToAdd.Add(vertexOrEdge);
-            if (_verticesAndEdgesToAdd.Count >= _batchSize)
+            _graphElementsToAdd.Add(graphElement);
+            if (_graphElementsToAdd.Count >= _batchSize)
             {
-                await BulkImportToCosmosDbAsync();                
+                await BulkImportToCosmosDbAsync();
             }
         }
 
         private static async Task BulkImportToCosmosDbAsync()
         {
-            var response = await _bulkExecutor.BulkImportAsync(_verticesAndEdgesToAdd);
+            var response = await _graphBulkExecutor.BulkImportAsync(_graphElementsToAdd);
 
             if (response.BadInputDocuments.Any())
-                throw new Exception("BulkExecutor found bad input vertices and edges!");
+                throw new Exception($"BulkExecutor found {response.BadInputDocuments.Count} bad input graph element(s)!");
 
-            _verticesAndEdgesToAdd.Clear();
+            _graphElementsToAdd.Clear();
         }
     }
 }
