@@ -53,7 +53,7 @@ namespace cosmosdb_graph_test
         private static IList<object> _graphElementsToAdd = new List<object>();
         private static long _totalElements = 0;
 
-        private static async Task Main(string[] args)
+        private static void Main(string[] args)
         {
             var stopwatch = new Stopwatch();
             stopwatch.Start();
@@ -70,11 +70,11 @@ namespace cosmosdb_graph_test
 
             if (DoWeHaveAllParameters())
             {
-                await InitializeCosmosDbAsync();
-                await InsertNodeAsync(_rootNodeId, string.Empty, string.Empty, 1);
+                InitializeCosmosDbAsync().Wait();
+                InsertNodeAsync(_rootNodeId, string.Empty, string.Empty, 1).Wait();
 
                 // Import remaining vertices and edges
-                await BulkImportToCosmosDbAsync();
+                BulkImportToCosmosDbAsync().Wait();
             }
             else
             {
@@ -83,7 +83,7 @@ namespace cosmosdb_graph_test
 
             stopwatch.Stop();
             Console.WriteLine($"Added {_totalElements} graph elements in {stopwatch.ElapsedMilliseconds} ms");
-            Console.ReadKey();
+            //Console.ReadKey();
         }
 
         private static async Task InitializeCosmosDbAsync()
@@ -164,23 +164,21 @@ namespace cosmosdb_graph_test
         {
             var numberOfNodesToCreate = 0;
             var properties = new Dictionary<string, object>();
-            var label = "node";
-
-            _totalElements++;
+            var label = "node";            
 
             switch (level)
             {
                 case 1:
-                    numberOfNodesToCreate = _random.Next(1, 10);
+                    numberOfNodesToCreate = 18;//_random.Next(1, 10);
                     break;
                 case 2:
-                    numberOfNodesToCreate = _random.Next(1, 100);
+                    numberOfNodesToCreate = 18;//_random.Next(1, 100);
                     break;
                 case 3:
-                    numberOfNodesToCreate = _random.Next(1, 40);
+                    numberOfNodesToCreate = 18;//_random.Next(1, 40);
                     break;
                 case 4:
-                    numberOfNodesToCreate = _random.Next(1, 20);
+                    numberOfNodesToCreate = 18;//_random.Next(1, 20);
                     label = "asset";
                     properties = new Dictionary<string, object>() {
                         {"manufacturer", _chance.PickOne(new string[] {"siemens", "abb", "vortex", "mulvo", "ropert"})},
@@ -190,7 +188,7 @@ namespace cosmosdb_graph_test
                     };
                     break;
                 case 5:
-                    numberOfNodesToCreate = _random.Next(1, 20);
+                    numberOfNodesToCreate = 18;//_random.Next(1, 20);
                     label = "asset";
                     properties = new Dictionary<string, object>() {
                         {"manufacturer", _chance.PickOne(new string[] {"siemens", "abb", "vortex", "mulvo", "ropert"})},
@@ -251,16 +249,20 @@ namespace cosmosdb_graph_test
 
         private static async Task BulkInsertAsync(object graphElement)
         {
+            _totalElements++;
             _graphElementsToAdd.Add(graphElement);
             if (_graphElementsToAdd.Count >= _batchSize)
-            {
-                await BulkImportToCosmosDbAsync();
+            {                
+                await BulkImportToCosmosDbAsync();                
             }
         }
 
         private static async Task BulkImportToCosmosDbAsync()
         {
-            var response = await _graphBulkExecutor.BulkImportAsync(_graphElementsToAdd);
+            Console.WriteLine($"Graph elements inserted until now: {_totalElements}");
+
+            var response = await _graphBulkExecutor.BulkImportAsync(
+                 documents: _graphElementsToAdd);
 
             if (response.BadInputDocuments.Any())
                 throw new Exception($"BulkExecutor found {response.BadInputDocuments.Count} bad input graph element(s)!");
