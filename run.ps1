@@ -4,13 +4,13 @@ Param(
   [string]$database,
   [string]$collection,  
   [bool]$emptyCollection = $false,
-  [bool]$rebuildImage = $false,
-  [int]$instances = 20
+  [bool]$rebuildImage = $false  
 )
 
 $ErrorActionPreference = "Stop"
 
 $ruThroughput = 100000
+$instances = $ruThroughput / 10000 # 1 partition is 10GB or 10k RUs
 $partitionKey = "partitionId"
 $acrName = $resourceGroup.replace("-", "").replace("_", "")
 $imageName = "cosmos-graph-test"
@@ -19,6 +19,11 @@ $imageTag = "1.0"
 $rgExists = az group exists -n $resourceGroup -o tsv
 if ($rgExists -ne "true") {
     az group create -l westeurope -n $resourceGroup
+}
+
+$existingContainers = az container list -g $resourceGroup --query "[?starts_with(name, '$imageName')].name" | ConvertFrom-Json
+foreach ($container in $existingContainers) {
+    az container delete -g $resourceGroup -n $container -y
 }
 
 $cosmosdbExists = az cosmosdb check-name-exists -n $cosmosdbAccount -o tsv
@@ -37,17 +42,19 @@ if ($emptyCollection -eq $true) {
 
 $collectionExists = az cosmosdb collection exists -g $resourceGroup -n $cosmosdbAccount --db-name $database --collection-name $collection -o tsv
 if ($collectionExists -ne "true") {
-    az cosmosdb collection create -g $resourceGroup -n $cosmosdbAccount --db-name $database --collection-name $collection --throughput $ruThroughput --partition-key-path "/$partitionKey"
+    az cosmosdb collection create -g $resourceGroup -n $cosmosdbAccount `
+        --db-name $database --collection-name $collection `
+        --throughput $ruThroughput --partition-key-path "/$partitionKey"
 }
 
 $acrExists = az acr list -g $resourceGroup --query "[0].name=='$acrName'" -o tsv
 if ($acrExists -ne "true") {
-    az acr create -g $resourceGroup -n $acrName --sku Basic --admin-enabled true
+    az acr create -g $resourceGroup -n $acrName --sku Standard --admin-enabled true
 }
 
 $acrServer = az acr show -n $acrName --query loginServer -o tsv
 $acrImage = "${acrServer}/${imageName}:${imageTag}"
-$imageExists = az acr repository list -n $acrName --query "[0] == '$imageName'"
+$imageExists = az acr repository list -n $acrName --query "[0] == '$imageName'" -o tsv
 
 if ($rebuildImage -eq $true -or $imageExists -ne "true") {
     az acr login -n $acrName
@@ -55,9 +62,16 @@ if ($rebuildImage -eq $true -or $imageExists -ne "true") {
     docker push $acrImage
 }
 
-$acrUsername = az acr credential show -n $acrName --query username
-$acrPassword = az acr credential show -n $acrName --query "passwords[0].value"
+$acrUsername = az acr credential show -n $acrName --query username -o tsv
+$acrPassword = az acr credential show -n $acrName --query "passwords[0].value" -o tsv
 
 $cosmosdbKey = az cosmosdb list-keys -g $resourceGroup -n $cosmosdbAccount --query primaryMasterKey -o tsv
 $connectionString = "AccountEndpoint=https://$cosmosdbAccount.documents.azure.com:443/;AccountKey=$cosmosdbKey;ApiKind=Gremlin;database=$database;collection=$collection"
 
+for ($i = 0; $i -lt $instances; $i++) {
+    az container create -g $resourceGroup -n "$imageName$i" --image $acrImage `
+        --restart-policy Never --os-type Windows --cpu 4 --memory 14 `
+        --registry-login-server $acrServer `
+        --registry-username $acrUsername --registry-password $acrPassword `
+        --command-line "cosmosdb-graph-test.exe -b 10000 -r $i -c $connectionString"
+}

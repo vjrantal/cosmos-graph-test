@@ -1,7 +1,7 @@
-FROM microsoft/dotnet-framework:4.7.2-runtime-windowsservercore-1803 AS base
+FROM microsoft/dotnet-framework:4.7.2-runtime-windowsservercore-ltsc2016 AS base
 WORKDIR /app
 
-FROM microsoft/dotnet-framework:4.7.2-sdk-windowsservercore-1803 AS build
+FROM microsoft/dotnet-framework:4.7.2-sdk-windowsservercore-ltsc2016 AS build
 WORKDIR /src
 COPY cosmosdb-graph-test.csproj cosmosdb-graph-test/
 RUN dotnet restore cosmosdb-graph-test/cosmosdb-graph-test.csproj
