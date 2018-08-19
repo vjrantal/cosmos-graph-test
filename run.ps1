@@ -3,15 +3,18 @@ Param(
   [string]$cosmosdbAccount,
   [string]$database,
   [string]$collection,  
-  [bool]$emptyCollection = $false,
+  [bool]$emptyCollection = $true,
   [bool]$rebuildImage = $false  
 )
 
 $ErrorActionPreference = "Stop"
 
+# One Cosmos DB partition is 10GB or 10k RUs. Total Container Instances shouldn't exceed 20.
 $ruThroughput = 100000
-$instances = $ruThroughput / 10000 # 1 partition is 10GB or 10k RUs
+$instances = [math]::min($ruThroughput / 10000, 20)
+
 $partitionKey = "partitionId"
+$batchSize = 5000
 $acrName = $resourceGroup.replace("-", "").replace("_", "")
 $imageName = "cosmos-graph-test"
 $imageTag = "1.0"
@@ -57,9 +60,7 @@ $acrImage = "${acrServer}/${imageName}:${imageTag}"
 $imageExists = az acr repository list -n $acrName --query "[].contains(@, '$imageName')" -o tsv
 
 if ($rebuildImage -eq $true -or $imageExists -ne "true") {
-    az acr login -n $acrName
-    docker build . -t $acrImage
-    docker push $acrImage
+    az acr build --registry $acrName --image $acrImage --os windows .
 }
 
 $acrUsername = az acr credential show -n $acrName --query username -o tsv
@@ -73,5 +74,5 @@ for ($i = 0; $i -lt $instances; $i++) {
         --restart-policy Never --os-type Windows --cpu 4 --memory 14 `
         --registry-login-server $acrServer `
         --registry-username $acrUsername --registry-password $acrPassword `
-        --command-line "cosmosdb-graph-test.exe -b 10000 -r $i -c $connectionString"
+        --command-line "cosmosdb-graph-test.exe -b $batchSize -r $i -c $connectionString"
 }
