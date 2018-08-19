@@ -47,14 +47,14 @@ if ($collectionExists -ne "true") {
         --throughput $ruThroughput --partition-key-path "/$partitionKey"
 }
 
-$acrExists = az acr list -g $resourceGroup --query "[0].name=='$acrName'" -o tsv
+$acrExists = az acr list -g $resourceGroup --query "[].contains(name, '$acrName')" -o tsv
 if ($acrExists -ne "true") {
     az acr create -g $resourceGroup -n $acrName --sku Standard --admin-enabled true
 }
 
 $acrServer = az acr show -n $acrName --query loginServer -o tsv
 $acrImage = "${acrServer}/${imageName}:${imageTag}"
-$imageExists = az acr repository list -n $acrName --query "[0] == '$imageName'" -o tsv
+$imageExists = az acr repository list -n $acrName --query "[].contains(@, '$imageName')" -o tsv
 
 if ($rebuildImage -eq $true -or $imageExists -ne "true") {
     az acr login -n $acrName
